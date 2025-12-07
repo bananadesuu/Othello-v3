@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>AI対戦オセロ (極限の貪欲王)</title>
+    <title>AI対戦オセロ (計算限界への挑戦)</title>
     <style>
         /* ... (CSSスタイルは変更なし) ... */
         /* 基本設定 */
@@ -78,7 +78,7 @@
     </style>
 </head>
 <body>
-    <h1>AI対戦オセロ (極限の貪欲王)</h1>
+    <h1>AI対戦オセロ (計算限界への挑戦)</h1>
     
     <div id="message">ゲーム開始！あなたの番です (黒)</div>
 
@@ -92,7 +92,6 @@
         const BLACK = 1; // プレイヤー
         const WHITE = 2; // AI
 
-        // 【評価テーブル】（評価に使わないが、構造上残す）
         const POSITION_WEIGHTS = [
             [ 100, -20,  10,  5,  5,  10, -20,  100], 
             [-20, -50,  -2, -2, -2,  -2, -50,  -20], 
@@ -104,11 +103,11 @@
             [ 100, -20,  10,  5,  5,  10, -20,  100]
         ];
         
-        // 【究極の貪欲設定】
-        const MIDGAME_SEARCH_DEPTH = 6; // 探索深さ（最大限）
-        const ENDGAME_THRESHOLD = 15;   
-        const MOBILITY_WEIGHT = 0;      // 【極限】モビリティを完全に無視
-        const STABILITY_WEIGHT = 0;     // 【極限】安定性を完全に無視
+        // 【限界突破設定】
+        const MIDGAME_SEARCH_DEPTH = 7; // 中盤戦の探索深さを 7 に強化 (注意: 低スペPCではフリーズの可能性)
+        const ENDGAME_THRESHOLD = 20;   // 空きマスが20以下で石数評価を強化
+        const MOBILITY_WEIGHT_BASE = 8; // モビリティ基本重みを強化
+        const STABILITY_WEIGHT = 50;    // 安定性評価の重み
 
         let board; 
         let currentPlayer;
@@ -122,7 +121,8 @@
             [-1, -1], [-1, 1], [1, -1], [1, 1]
         ];
 
-        // --- 基本関数（変更なし） ---
+        // --- 基本関数 ---
+
         function updateMessage(text) {
             messageElement.textContent = text;
         }
@@ -215,36 +215,62 @@
                     if (currentBoard[r][c] === BLACK) blackCount++;
                 }
             }
-            // 【極限の評価】終盤の石数差に超巨大な係数をかけ、勝利を絶対視
+            // 評価値のスケールを合わせるために超巨大な係数をかける
             return (whiteCount - blackCount) * 10000000; 
         }
         
         function countStability(currentBoard, player) {
-            // 安定性評価はモビリティと共に無視するため、0を返す
-            return 0;
+            let stabilityCount = 0;
+            const corners = [[0, 0], [0, 7], [7, 0], [7, 7]];
+            for (const [r, c] of corners) {
+                if (currentBoard[r][c] === player) {
+                    stabilityCount++;
+                }
+            }
+            return stabilityCount;
         }
 
 
         /**
-         * 【極限の貪欲】評価関数：石数以外の要素を無視
+         * 【最終強化版】中盤戦の評価関数（位置 + モビリティ + 安定性 + 動的重み）
          */
         function midgameEvaluation(currentBoard) {
-            let whiteCount = 0;
-            let blackCount = 0;
+            const emptyCells = countEmptyCells(currentBoard);
             
-            // 1. 石数カウント
+            let whiteScore = 0;
+            let blackScore = 0;
+            
+            // 1. 位置評価 (Placement Score)
             for (let r = 0; r < 8; r++) {
                 for (let c = 0; c < 8; c++) {
+                    const weight = POSITION_WEIGHTS[r][c];
                     if (currentBoard[r][c] === WHITE) {
-                        whiteCount++;
+                        whiteScore += weight;
                     } else if (currentBoard[r][c] === BLACK) {
-                        blackCount++;
+                        blackScore += weight;
                     }
                 }
             }
+            
+            // 2. モビリティ評価 (Mobility Score)
+            const whiteMobility = getValidMoves(currentBoard, WHITE).length;
+            const blackMobility = getValidMoves(currentBoard, BLACK).length;
+            // 【強化】序盤はモビリティをさらに重視し、終盤は重要度を下げる
+            const mobWeight = MOBILITY_WEIGHT_BASE * (emptyCells / 60); 
+            const mobilityScore = mobWeight * (whiteMobility - blackMobility);
+            
+            // 3. 安定性評価 (Stability Score)
+            const stabilityScore = STABILITY_WEIGHT * (countStability(currentBoard, WHITE) - countStability(currentBoard, BLACK));
+            
+            // 4. 【動的重み調整】石数（位置）の評価。終盤に近づくほど重要度を上げる
+            const progress = (64 - emptyCells) / 64; 
+            const dynamicWeight = 0.2 + (0.8 * progress); 
 
-            // 【極限】中盤でも「石の数」の差を絶対的な価値とする
-            return (whiteCount - blackCount);
+
+            // 最終スコア: (動的石数評価) + (モビリティ評価) + (安定性評価)
+            const placementScore = (whiteScore - blackScore) * dynamicWeight;
+            
+            return placementScore + mobilityScore + stabilityScore;
         }
         
 
@@ -253,6 +279,7 @@
             const emptyCells = countEmptyCells(currentBoard);
             const isEndgame = emptyCells <= ENDGAME_THRESHOLD;
 
+            // 探索終了条件
             if (depth === 0 || checkGameOverState(currentBoard) || isEndgame) {
                 if (checkGameOverState(currentBoard) || isEndgame) {
                      return finalScoreEvaluation(currentBoard);
@@ -263,6 +290,7 @@
             const player = isMaximizingPlayer ? WHITE : BLACK;
             const validMoves = getValidMoves(currentBoard, player);
             
+            // パスの処理
             if (validMoves.length === 0) {
                 return minimax(currentBoard, depth - 1, alpha, beta, !isMaximizingPlayer);
             }
@@ -302,9 +330,9 @@
             const depth = isEndgame ? emptyCells : MIDGAME_SEARCH_DEPTH;
 
             if(isEndgame) {
-                updateMessage(`AI (白) の思考中です...【終盤パーフェクト貪欲サーチ: ${depth}手読み】`);
+                updateMessage(`AI (白) の思考中です...【最終計算！ ${depth}手読み】`);
             } else {
-                updateMessage(`AI (白) の思考中です...【中盤極限貪欲サーチ: ${depth}手読み】`);
+                updateMessage(`AI (白) の思考中です...【限界突破！ ${depth}手読み】`);
             }
 
             let bestMove = null;
@@ -327,7 +355,7 @@
             return bestMove;
         }
 
-        // --- 描画とゲームフロー（変更なし） ---
+        // --- 描画とゲームフロー ---
         
         function drawBoard() {
             boardContainer.innerHTML = '';
